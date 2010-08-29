@@ -26,7 +26,8 @@
 
 ## Installation
 
-  Clone and compile from github by now, Clojars soon
+  Clone and compile from github.
+  Clojars: [tokengame "0.0.1-SNAPSHOT"]
 
 
 ## License
