@@ -1,0 +1,36 @@
+# tokengame
+
+  Visual modelling of systems using petri nets & distributed execution using Clojure.
+
+## Usage
+
+  1.-Use a graphical tool for petri nets to build a network (e.g. http://woped.ba-karlsruhe.de/woped)
+  2.-Export your network as a PNML (Petri Network Markup Language) document
+  3.-Start RabbitMQ version 2.0 (http://www.rabbitmq.com/)
+  4.-Test your model using the standalone mode of tokengame:
+
+    java -cp tokengame-0.0.1-SNAPSHOT-standalone.jar tokengame.core model-file.pnml run-standalone
+
+  5.-Watch the tokens in a places:
+
+    java -cp tokengame-0.0.1-SNAPSHOT-standalone.jar tokengame.core model-file.pnml watch-place place-name
+
+  6.- Fire some tokens in different places:
+
+    java -cp tokengame-0.0.1-SNAPSHOT-standalone.jar tokengame.core model-file.pnml fire place-name token-value
+
+  7.- Run the model in a distributed environment, starting transitions in different nodes:
+
+    java -cp tokengame-0.0.1-SNAPSHOT-standalone.jar tokengame.core model-file.pnml run-transition transition-name
+
+
+## Installation
+
+  Clone and compile from github by now, Clojars soon
+
+
+## License
+
+  Copyright (C) 2010 Antonio Garrote
+
+  Distributed under the LGPL License
