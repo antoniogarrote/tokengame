@@ -25,26 +25,6 @@
          (processResult [rc path ctx data stat]
                         (f rc path data stat)))))
 
-(defn connect
-  "Connects to a zookeeper cluster"
-  ([servers opts]
-     (let [servers-str (if (string? servers) servers (apply str servers))
-           session-timeout (:timeout opts)
-           watcher-fn (:watcher opts)
-           session-id (:id opts)
-           password (:password opts)
-           connection (atom nil)]
-       (let [zk (if (nil? password)
-                  (ZooKeeper. servers-str session-timeout (watcher watcher-fn))
-                  (ZooKeeper. servers-str session-timeout (watcher watcher-fn (long session-id) (.getBytes password))))]
-         (dosync (swap! connection (fn [_] zk)))
-         (alter-var-root #'*zk* (fn [_] {:servers servers
-                                         :session-timeout session-timeout
-                                         :session-id session-id
-                                         :password password
-                                         :connection @connection}))
-         *zk*))))
-
 (defn make
   "Connects to a zookeeper cluster and returns a connection object"
   ([servers opts]
@@ -63,6 +43,13 @@
           :session-id session-id
           :password password
           :connection @connection}))))
+
+(defn connect
+  "Connects to a zookeeper cluster"
+  ([servers opts]
+     (let [zk (make servers opts)]
+       (alter-var-root #'*zk* (fn [_] zk))
+       *zk*)))
 
 (defn state
   "Get the state of the connection"
@@ -111,7 +98,6 @@
 
 (defn- make-acl
   ([scheme perms]
-     (println (str "making acl for " scheme " -> " perms " ? " (coll? scheme) " ... " (map (fn [p] (ACL. p (world-scheme))) perms)))
      (if (coll? scheme)
        (let [[s d] scheme]
          (condp = s
