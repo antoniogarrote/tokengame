@@ -2,6 +2,7 @@
   :description "Tools for building distributed systems with Clojure"
   :dependencies [[org.clojure/clojure "1.2.0"]
                  [org.clojure/clojure-contrib "1.2.0"]
-                 [com.rabbitmq/amqp-client "2.0.0"]]
+                 [com.rabbitmq/amqp-client "2.0.0"]
+                 [org.apache.zookeeper/zookeeper "3.3.1"]]
   :dev-dependencies [[leiningen/lein-swank "1.2.0-SNAPSHOT"]]
   :aot :all)
