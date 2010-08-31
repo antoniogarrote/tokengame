@@ -33,7 +33,7 @@
 (defn- watcher
   "Creates a new watcher with the provided function"
   ([f] (proxy [Watcher] []
-         (process [event] (println "*** got something") (f (event-to-map event))))))
+         (process [event] (f (event-to-map event))))))
 
 (defn- stat-callback
   "Creates a new callback"
@@ -52,13 +52,15 @@
   ([servers opts]
      (let [servers-str (if (string? servers) servers (apply str servers))
            session-timeout (:timeout opts)
-           watcher-fn (:watcher opts)
+           prom (promise)
+           watcher-fn (fn [e] (when (= (:state e) :sync-connected) (deliver prom :connected)))
            session-id (:id opts)
            password (:password opts)
            connection (atom nil)]
        (let [zk (if (nil? password)
                   (ZooKeeper. servers-str session-timeout (watcher watcher-fn))
                   (ZooKeeper. servers-str session-timeout (watcher watcher-fn (long session-id) (.getBytes password))))]
+         @prom
          (dosync (swap! connection (fn [_] zk)))
          {:servers servers
           :session-timeout session-timeout
@@ -135,8 +137,7 @@
   ([acl-map]
      (let [acl-map (process-acl-map-pre acl-map)
            acl-map (reduce (fn [ac [scheme perms]]
-                             (let [next-acl-list (make-acl scheme perms)
-                                   _ (println (str "ACL LIST " next-acl-list))]
+                             (let [next-acl-list (make-acl scheme perms)]
                                (concat ac next-acl-list))) [] acl-map)]
        (vec acl-map))))
 
@@ -181,6 +182,8 @@
 
 (defn create
   "Creates a new znode in a zookeeper server"
+  ([path acl-map create-mode]
+     (create path " " acl-map create-mode))
   ([path data acl-map create-mode]
      (let [data (if (string? data) (.getBytes data) data)]
        (.create (:connection *zk*) path data (process-acl-map acl-map) (process-create-mode create-mode)))))

@@ -46,7 +46,7 @@
   "Creates a new channel through a rabbit connection with a defined name"
   ([rabbit name]
      (let [chn (.createChannel (:connection rabbit))]
-;       (log :error "About to alter the channels")
+       (println "About to alter the channels")
        (dosync (alter (:channels rabbit) (fn [old] (assoc old name chn)))))))
 
 (defn remove-channel
@@ -70,7 +70,7 @@
   ([rabbit channel name & args]
      (let [chn (get (deref (:channels rabbit)) channel)
            {:keys [type durable autodelete]} (check-default-values (apply array-map args) *default-rabbit-exchange-parameters*)]
-       (log :info (str "*** Declaring exchange " name " through channel " channel " with properties type:" type " durable:" durable " autodelete:" autodelete ))
+       (println (str "*** Declaring exchange " name " through channel " channel " with properties type:" type " durable:" durable " autodelete:" autodelete ))
        (.exchangeDeclare chn name type durable autodelete {}))))
 
 (defn declare-direct-exchange
@@ -79,7 +79,7 @@
   ([rabbit channel name & args]
      (let [chn (get (deref (:channels rabbit)) channel)
            {:keys [type durable autodelete]} (assoc (check-default-values (apply array-map args) *default-rabbit-exchange-parameters*) :type "direct")]
-       (log :info (str "*** Declaring exchange " name " through channel " channel " with properties type:" type " durable:" durable " autodelete:" autodelete ))
+       (println (str "*** Declaring exchange " name " through channel " channel " with properties type:" type " durable:" durable " autodelete:" autodelete ))
        (.exchangeDeclare chn name type durable autodelete {}))))
 
 (defn declare-topic-exchange
@@ -88,7 +88,7 @@
   ([rabbit channel name & args]
      (let [chn (get (deref (:channels rabbit)) channel)
            {:keys [type durable autodelete]} (assoc (check-default-values (apply array-map args) *default-rabbit-exchange-parameters*) :type "topic")]
-       (log :info (str "*** Declaring exchange " name " through channel " channel " with properties type:" type " durable:" durable " autodelete:" autodelete ))
+       (println (str "*** Declaring exchange " name " through channel " channel " with properties type:" type " durable:" durable " autodelete:" autodelete ))
        (.exchangeDeclare chn name false durable autodelete {}))))
 
 ;; Queues
@@ -99,7 +99,7 @@
   ([rabbit channel queue-name exchange-name routing-key & args]
      (let [chn (get (deref (:channels rabbit)) channel)
            {:keys [exclusive durable autodelete]} (check-default-values (apply array-map args) *default-rabbit-queue-parameters*)]
-       (log :info (str "*** Declaring queue " queue-name " through channel " channel " and exchange " exchange-name " with properties exclusive:" exclusive " durable:" durable " autodelete:" autodelete ))
+       (println (str "*** Declaring queue " queue-name " through channel " channel " and exchange " exchange-name " with properties exclusive:" exclusive " durable:" durable " autodelete:" autodelete ))
        (.queueDeclare chn queue-name durable exclusive autodelete {})
        (.queueBind chn queue-name exchange-name routing-key)
        (dosync (alter (:queues rabbit) (fn [old] (assoc old queue-name {:exchange exchange-name :routing-key routing-key :channel chn})))
@@ -124,9 +124,9 @@
                         (handleDelivery [#^String consumerTag #^Envelope envelope #^AMQP.BasicProperties properties body]
                                         (let [msg (String. body)
                                               delivery-tag (.getDeliveryTag envelope)]
-;                                          (remote-log :info (str "*** received message with tag " delivery-tag " from queue " queue " and channel " channel))
+                                          (println (str "*** received message with tag " delivery-tag " from queue " queue " and channel " channel))
                                           (f msg))))]
-;         (log :info (str "*** about to block in queue " queue " with channel: " chn " and consumer: " consumer))
+         (println (str "*** about to block in queue " queue " with channel: " chn " and consumer: " consumer))
          (.basicConsume chn queue true consumer)))))
 
 (defn lazy-queue
@@ -147,9 +147,9 @@
                                               delivery-tag (.getDeliveryTag envelope)]
 ;                                          (log :info (str "*** recived message with tag " delivery-tag " from queue " queue " and channel " channel))
                                           (.put q msg))))]
-;         (log :info (str "*** about to block in queue " queue " and channel " chn "and consumer " consumer))
+         (println (str "*** about to block in queue " queue " and channel " chn "and consumer " consumer))
          (.start (Thread. (.basicConsume chn queue true consumer)))
-         (log :info (str "*** consumer started"))
+         (println (str "*** consumer started"))
          (lazy-queue q)))))
 
 (defn make-consumer-queue-object
@@ -299,7 +299,7 @@
 (defn publish
   "Publish a message through a channel"
   ([rabbit channel exchange routing-key message]
-;     (remote-log :info (str "*** publishing a message through channel " channel " to exchange " exchange " with routing key " routing-key " message " message))
+     (println (str "*** publishing a message through channel " channel " to exchange " exchange " with routing key " routing-key " message " message))
      (.basicPublish (get (deref (:channels rabbit)) channel)
                     exchange
                     routing-key
