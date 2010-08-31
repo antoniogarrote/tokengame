@@ -82,15 +82,15 @@
 
 (defn- digest-scheme
   ([username-password] (let [id (Id.)]
-        (.setScheme id "digest")
-        (.setId id username-password)
-        id)))
+                         (.setScheme id "digest")
+                         (.setId id username-password)
+                         id)))
 
 (defn- ip-scheme
   ([ip] (let [id (Id.)]
-        (.setScheme id "ip")
-        (.setId id ip)
-        id)))
+          (.setScheme id "ip")
+          (.setId id ip)
+          id)))
 
 (defn- process-acl-map-pre
   ([acl-map]
@@ -163,7 +163,7 @@
      (let [data (if (string? data) (.getBytes data) data)]
        (.create (:connection *zk*) path data (process-acl-map acl-map) (process-create-mode create-mode)))))
 
-(defn exists
+(defn exists?
   "Checks the stats for the znode"
   ([path & opts]
      (let [should-watch-or-fn (if (empty? opts) false (first opts))]
@@ -217,3 +217,30 @@
   ([zk & body]
      `(binding [*zk* ~zk]
         ~@body)))
+
+;; High level operations
+
+(defn set-map
+  "Writes a map under a znode as pairs of children znode key -> value.
+   The function writes nested maps recursively"
+  ([path m acl-map create-mode]
+     (when-not (exists? path)
+       (throw (Exception. "Root node doest not exists")))
+     (set-map (map (fn [[k v]] [(str path "/" (if (keyword? k) (name k) k)) v] ) m) acl-map create-mode))
+  ([children acl-map create-mode]
+     (if-not (empty? children)
+       (let [[path v] (first children)]
+         (println (str "path: " path " value: " v " create-mode " create-mode))
+         ; If the children is a map we add the pairs to the list and recur
+         (if (map? v)
+           (do
+             ; Before recuring, we create the znode where the inner map will be stored
+             (when-not (exists? path)
+               (create path "" acl-map create-mode))
+             (recur (concat (rest children) (map (fn [[k v]] [(str path "/" (if (keyword? k) (name k) k)) v]) v))
+                    acl-map create-mode))
+           ; If it is a plain value we just insert the value
+           (do
+             (when-not (exists? path)
+               (create path v acl-map create-mode))
+             (recur (rest children) acl-map create-mode)))))))
