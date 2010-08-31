@@ -8,10 +8,32 @@
 
 (defonce *zk* nil)
 
+(defn state-to-keyword
+  ([state]
+     (condp = (.getIntValue state)
+       (.getIntValue org.apache.zookeeper.Watcher$Event$KeeperState/Disconnected)    :disconnected
+       (.getIntValue org.apache.zookeeper.Watcher$Event$KeeperState/Expired)         :expired
+       (.getIntValue org.apache.zookeeper.Watcher$Event$KeeperState/NoSyncConnected) :no-sync-connected
+       (.getIntValue org.apache.zookeeper.Watcher$Event$KeeperState/SyncConnected)   :sync-connected
+       :unknown)))
+
+(defn event-type-to-keyword
+  ([type]
+     (condp = (.getIntValue type)
+       (.getIntValue org.apache.zookeeper.Watcher$Event$EventType/NodeChildrenChanged) :node-children-changed
+       (.getIntValue org.apache.zookeeper.Watcher$Event$EventType/NodeCreated)         :node-created
+       (.getIntValue org.apache.zookeeper.Watcher$Event$EventType/NodeDataChanged)     :node-data-changed
+       (.getIntValue org.apache.zookeeper.Watcher$Event$EventType/NodeDeleted)         :node-deleted
+       (.getIntValue org.apache.zookeeper.Watcher$Event$EventType/None)                :none
+       (throw (Exception. (str "Unknown event type: " type))))))
+
+(defn event-to-map
+  ([evt] {:path (.getPath evt) :type (event-type-to-keyword (.getType evt)) :state (state-to-keyword (.getState evt))}))
+
 (defn- watcher
   "Creates a new watcher with the provided function"
   ([f] (proxy [Watcher] []
-         (process [event] (f event)))))
+         (process [event] (println "*** got something") (f (event-to-map event))))))
 
 (defn- stat-callback
   "Creates a new callback"
@@ -223,24 +245,58 @@
 (defn set-map
   "Writes a map under a znode as pairs of children znode key -> value.
    The function writes nested maps recursively"
+
   ([path m acl-map create-mode]
      (when-not (exists? path)
        (throw (Exception. "Root node doest not exists")))
      (set-map (map (fn [[k v]] [(str path "/" (if (keyword? k) (name k) k)) v] ) m) acl-map create-mode))
+
   ([children acl-map create-mode]
      (if-not (empty? children)
        (let [[path v] (first children)]
          (println (str "path: " path " value: " v " create-mode " create-mode))
-         ; If the children is a map we add the pairs to the list and recur
+                                        ; If the children is a map we add the pairs to the list and recur
          (if (map? v)
            (do
-             ; Before recuring, we create the znode where the inner map will be stored
+                                        ; Before recuring, we create the znode where the inner map will be stored
              (when-not (exists? path)
                (create path "" acl-map create-mode))
              (recur (concat (rest children) (map (fn [[k v]] [(str path "/" (if (keyword? k) (name k) k)) v]) v))
                     acl-map create-mode))
-           ; If it is a plain value we just insert the value
+                                        ; If it is a plain value we just insert the value
            (do
              (when-not (exists? path)
-               (create path v acl-map create-mode))
+               (create path v acl-map create-mode) )
              (recur (rest children) acl-map create-mode)))))))
+
+(defn watch-group
+  ([group-path callback]
+     (let [initial-children (get-children group-path)]
+       (get-children group-path
+                     (fn [evt]
+                       (try
+                        (let [new-children (get-children group-path)
+                              diff (if (> (count new-children) (count initial-children))
+                                     (vec (clojure.set/difference (set new-children) (set initial-children)))
+                                     (vec (clojure.set/difference (set initial-children) (set new-children))))
+                              kind (if (> (count new-children) (count initial-children)) :member-joined :member-left)
+                              result (callback {:kind kind :members diff})]
+                          (when (not= result :cancel)
+                            (watch-group group-path callback)))
+                        (catch Exception ex (println (str "ERROR! " (.getMessage ex))))))))))
+
+(defn join-group
+  ([group-path member-name]
+     (join-group group-path member-name " "))
+  ([group-path member-name value]
+     (let [stat (exists? (str group-path "/" member-name))]
+       (if stat
+         :already-member
+         (do (create (str group-path "/" member-name) value {:world [:read]} :ephemeral) :ok)))))
+
+(defn leave-group
+  ([group-path member-name]
+     (let [stat (exists? (str group-path "/" member-name))]
+       (if stat
+         (do (delete (str group-path "/" member-name) (:version stat)) :ok)
+         :not-member))))
