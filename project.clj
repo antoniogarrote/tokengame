@@ -1,4 +1,4 @@
-(defproject tokengame "0.0.1-SNAPSHOT"
+(defproject tokengame "0.0.2-SNAPSHOT"
   :description "Tools for building distributed systems with Clojure"
   :dependencies [[org.clojure/clojure "1.2.0"]
                  [org.clojure/clojure-contrib "1.2.0"]
