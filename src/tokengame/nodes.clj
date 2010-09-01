@@ -1,6 +1,7 @@
 (ns tokengame.nodes
   (:require [tokengame.rabbit :as rabbit]
-            [tokengame.zookeeper :as zk])
+            [tokengame.zookeeper :as zk]
+            [tokengame.utils])
   (:use [tokengame.utils]
         [clojure.contrib.logging :only [log]]
         [clojure.contrib.json]))
@@ -14,6 +15,8 @@
 (defonce *mbox* nil)
 (def *process-table* (ref {}))
 (def *process-count* (ref 0))
+(def *rpc-table* (ref {}))
+(def *rpc-count* (ref 0))
 (def *node-id* (ref nil))
 
 ;; protocol
@@ -25,6 +28,23 @@
       :to   to
       :from from
       :content msg}))
+
+(defn protocol-rpc
+  ([from function args should-return internal-id]
+     {:type :msg
+      :topic :rpc
+      :from from
+      :content {:function      function
+                :args          args
+                :should-return should-return
+                :internal-id    internal-id}}))
+
+(defn protocol-answer
+  ([value internal-id]
+     {:type :msg
+      :topic :rpc-response
+      :content {:value value
+                :internal-id internal-id}}))
 
 (defn admin-msg
   ([command args from to]
@@ -76,27 +96,54 @@
 
 ;; core functions for nodes
 
+(declare pid-to-node-id)
+(defn process-rpc
+  "Process an incoming RPC request"
+  ([msg]
+     (let [from (get msg :from)
+           content (get msg :content)
+           function (get content :function)
+           args     (get content :args)
+           should-return (get content :should-return)
+           internal-id (get content :internal-id)]
+       (println (str "invoking " function " with " args " from " from " should return? " should-return))
+       (try
+        (let [f (eval-ns-fn function)
+              result (apply f args)]
+          (println (str "Success RPC, result " result))
+          (when should-return
+            (let [node (pid-to-node-id from)
+                  resp (protocol-answer result internal-id)]
+              (rabbit/declare-exchange *rabbit-server* (node-channel-id @*node-id*) (node-exchange-id node))
+              (rabbit/publish *rabbit-server* (node-channel-id @*node-id*) (node-exchange-id node) "msg" (default-encode resp)))))
+        (catch Exception ex
+          (do
+            (log :error (str "Error invoking RPC call"))))))))
+
 (declare pid-to-mbox)
+(declare rpc-id-to-promise)
+(declare remove-rpc-promise)
 (defn dispatch-msg
   ([msg]
-     (println "dispatching...")
      (condp = (keyword (:topic msg))
        :process (let [mbox (pid-to-mbox (:to msg))]
-                  (println (str "DISPATCHED!!! " (:content msg) " --: " mbox " class " (class mbox)))
-                  (.put mbox (:content msg))))))
+                  (.put mbox (:content msg)))
+       :rpc     (future (process-rpc msg))
+       :rpc-response (future (try
+                              (let [prom (rpc-id-to-promise (:internal-id (:content msg)))
+                                    val (:value (:content msg))]
+                                (deliver prom val)
+                                (remove-rpc-promise (:internal-id (:content msg))))
+                              (catch Exception ex (log :error "Error processing rpc-response")))))))
 
 (defn node-dispatcher-thread
   "The main thread receiving events and messages"
   ([name id queue]
-     (println (str "queue value " queue))
      (loop [should-continue true
             queue queue]
-       (println (str "queue value ahora" queue))
        (let [msg (.take queue)]
-         (println (str "---> " msg))
          (try
           (do
-            (println (str "*** " name " , " (java.util.Date.) " got message : " (default-decode msg)))
             (let [msg (default-decode msg)]
               (condp = (keyword (:type msg))
                 :msg (dispatch-msg msg)
@@ -147,6 +194,10 @@
             lpid (deref *node-id*)]
         (str lpid "." rpid))))
 
+(defn- next-rpc-id
+  ([] (let [rpc (dosync (alter *rpc-count* (fn [old] (inc old))))]
+        rpc)))
+
 (defn pid-to-process-number
   ([pid] (last (vec (.split pid "\\.")))))
 
@@ -160,6 +211,20 @@
        (dosync (alter *process-table* (fn [table] (assoc table process-number {:mbox q
                                                                                :dictionary {}}))))
        q)))
+
+(defn- register-rpc-promise
+  ([rpc-id]
+     (let [p (promise)]
+       (dosync (alter *rpc-table* (fn [table] (assoc table rpc-id p))))
+       p)))
+
+(defn- rpc-id-to-promise
+  ([rpc-id]
+     (get @*rpc-table* rpc-id)))
+
+(defn- remove-rpc-promise
+  ([rpc-id]
+     (alter @*rpc-table* (fn [table] (dissoc table rpc-id)))))
 
 (defn pid-to-mbox
   ([pid] (let [rpid (pid-to-process-number pid)]
@@ -180,7 +245,6 @@
 
 (defn clean-process
   ([pid]
-     (println (str "CLEANING PID " pid))
      (let [version (:version (second (zk/get-data (zk-process-path pid))))
            registered (dictionary-get pid :registered-name)]
        (zk/delete (zk-process-path pid) version)
@@ -207,7 +271,7 @@
            (let [result (f)]
              (clean-process *pid*))
            (catch Exception ex
-             (println (str "*** process " pid " died with message : " (.getMessage ex)))
+             (log :error (str "*** process " pid " died with message : " (.getMessage ex)))
              (clean-process *pid*)))))
          pid)))
 
@@ -227,7 +291,6 @@
   ([node pid msg]
      (if (zk/exists? (zk-process-path pid))
        (do
-         (println (str "about to send throught channel " (node-channel-id @*node-id*) " and exchange: "  (node-exchange-id node)))
          (rabbit/declare-exchange *rabbit-server* (node-channel-id @*node-id*) (node-exchange-id node))
          (rabbit/publish *rabbit-server* (node-channel-id @*node-id*) (node-exchange-id node) "msg" (default-encode (protocol-process-msg (self) pid msg))))
        (throw (Exception. (str "Non existent remote process " pid))))))
@@ -269,3 +332,27 @@
   ([name]
      (if (zk/exists? (str *node-names-znode* "/" name))
        (String. (first (zk/get-data (str *node-names-znode* "/" name)))))))
+
+(defn resolve-node-name
+  "Returns the identifier for a provided node name"
+  ([node-name]
+     (let [stat (zk/exists? (str *node-nodes-znode* "/" node-name))]
+       (if stat
+         (let [[data stats] (zk/get-data (str *node-nodes-znode* "/" node-name))]
+           (String. data))
+         (throw (Exception. (str "Unknown node " node-name)))))))
+
+(defn rpc-call
+  "Executes a non blocking RPC call"
+  ([node function args]
+     (let [msg (protocol-rpc (self) function args false 0)]
+       (rabbit/publish *rabbit-server* (node-channel-id @*node-id*) (node-exchange-id node) "msg" (default-encode msg)))))
+
+(defn rpc-blocking-call
+  "Executes a non blocking RPC call"
+  ([node function args]
+     (let [rpc-id (next-rpc-id)
+           prom (register-rpc-promise rpc-id)
+           msg (protocol-rpc (self) function args true rpc-id)]
+       (rabbit/publish *rabbit-server* (node-channel-id @*node-id*) (node-exchange-id node) "msg" (default-encode msg))
+       @prom)))
