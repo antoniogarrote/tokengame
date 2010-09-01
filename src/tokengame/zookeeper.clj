@@ -1,4 +1,5 @@
 (ns tokengame.zookeeper
+  (:use [clojure.contrib.logging :only [log]])
   (:import [org.apache.zookeeper
             ZooKeeper
             Watcher]
@@ -243,7 +244,12 @@
      `(binding [*zk* ~zk]
         ~@body)))
 
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; High level operations
+;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;; Group membership
 
 (defn set-map
   "Writes a map under a znode as pairs of children znode key -> value.
@@ -258,21 +264,22 @@
      (if-not (empty? children)
        (let [[path v] (first children)]
          (println (str "path: " path " value: " v " create-mode " create-mode))
-                                        ; If the children is a map we add the pairs to the list and recur
+         ; If the children is a map we add the pairs to the list and recur
          (if (map? v)
            (do
-                                        ; Before recuring, we create the znode where the inner map will be stored
+             ; Before recuring, we create the znode where the inner map will be stored
              (when-not (exists? path)
                (create path "" acl-map create-mode))
              (recur (concat (rest children) (map (fn [[k v]] [(str path "/" (if (keyword? k) (name k) k)) v]) v))
                     acl-map create-mode))
-                                        ; If it is a plain value we just insert the value
+           ; If it is a plain value we just insert the value
            (do
              (when-not (exists? path)
                (create path v acl-map create-mode) )
              (recur (rest children) acl-map create-mode)))))))
 
 (defn watch-group
+  "Watches changes of members in a group"
   ([group-path callback]
      (let [initial-children (get-children group-path)]
        (get-children group-path
@@ -289,6 +296,7 @@
                         (catch Exception ex (println (str "ERROR! " (.getMessage ex))))))))))
 
 (defn join-group
+  "Joins a group with the provided name"
   ([group-path member-name]
      (join-group group-path member-name " "))
   ([group-path member-name value]
@@ -298,8 +306,105 @@
          (do (create (str group-path "/" member-name) value {:world [:read]} :ephemeral) :ok)))))
 
 (defn leave-group
+  "Makes member with name member-name leave the provided group"
   ([group-path member-name]
      (let [stat (exists? (str group-path "/" member-name))]
        (if stat
          (do (delete (str group-path "/" member-name) (:version stat)) :ok)
          :not-member))))
+
+
+;;; 2 Phase Commit
+
+(defn make-2-phase-commit
+  "Creates a new transaction with name tx-name and some participants"
+  ([tx-name tx-participants]
+     (do
+       ;; Cleaning old transaction
+       (doseq [tx-part (if (exists? tx-name) (get-children tx-name) [])]
+         (let [stats (exists? (str tx-name "/" tx-part))]
+           (when stats (delete (str tx-name "/" tx-part) (:version stats)))))
+       (let [stats (exists? tx-name)] (when stats (delete tx-name (:version stats))))
+       ;; transaction znode
+       (create tx-name {:world [:all]} :persistent)
+       ;; create commit/rollback handlers
+       (doseq [tx-part tx-participants]
+         (let [tx-part-name (str tx-name "/" tx-part)]
+           (create tx-part-name "pending" {:world [:all]} :ephemeral))))))
+
+(defn- check-transaction-part
+  ([part prom]
+     ;; we get current status for the participant
+     (let [[data stats] (get-data part)
+           result (String. data)]
+       (condp = result
+         ;; If it has voted commit/rollback, we return the state without setting
+         ;; a callback
+         "commit"   (deliver prom "commit")
+         "rollback" (deliver prom "rollback")
+         ;; If the status is pending we set up a callback and wait until it votes
+         "pending"  (let [d (get-data part stats (fn [e]
+                                                   (try
+                                                    ;; data change, lets change
+                                                    ;; the current status and we
+                                                    ;; dliver it
+                                                    (let [s (exists? part)]
+                                                      (if (nil? s) (deliver "rollback")
+                                                          (if (= "commit" (String. (get-data part s)))
+                                                            (deliver prom "commit")
+                                                            (deliver prom "rollback"))))
+                                                    ;; There could be a previous
+                                                    ;; delivery, so we catch the
+                                                    ;; exception in case we are
+                                                    ;; doing doulbe delivery
+                                                   (catch Exception ex
+                                                     (do (log :error (str "Error checking transaction: " (.getMessage ex))))))))]
+                      ;; We check the status when setting up the watcher in case
+                      ;; it has change since the last check
+                      (condp = (String. d)
+                        "pending" ""
+                        (try (deliver prom (String. d))
+                             ;; Callback could have already deliver, we catch
+                             ;; double delivery
+                             (catch Exception ex (log :error  (str "Error checking transaction: " (.getMessage ex)))))))
+         ;; Unknown state -> rolling back
+         (deliver prom "rollback")))))
+
+(defn commit
+  "Commits in the 2-phase-commit protocol and returns :commited or :rollback depending on the other participants"
+  ([tx-name tx-commit]
+     ;; throw exception if there is no transaction running
+     (when (nil? (exists? tx-name)) (throw (Exception. "Non existant transaction")))
+
+     (let [tx-participants (filter #(not= %1 tx-commit) (get-children tx-name)) ;; Discover participants in the transaction
+           proms (map (fn [_] (promise)) tx-participants)]
+       ;; Check the status of other participants and set a callback that will
+       ;; deliver commit/rollback in the provided promise when the participant
+       ;; has voted
+       (doseq [tx-part tx-participants
+               prom proms]
+         (apply check-transaction-part [(str tx-name "/" tx-part) prom]))
+       ;; We set ourt state
+       (set-data (str tx-name "/" tx-commit) "commit" 0)
+       ;; We wait until all the participants have voted commit or one of them
+       ;; has voted rollback
+       (loop [should-continue true
+              proms proms]
+         (if (not (empty? proms))
+           (let [prom (first proms)
+                 result @prom]
+             (if (= result "commit")
+               (recur true (rest proms))
+               "rollback"))
+           "commit")))))
+
+(defn rollback
+  "Roolbacks in the 2-phase-commit protocol"
+  ([tx-name tx-rollback]
+     ;; Throw exception if there is no running transaction
+     (when (nil? (exists? tx-name)) (throw (Exception. "Non existant transaction")))
+     ;; We set vote rollback and returns rollback
+     (let [tx-part  (str tx-name "/" tx-rollback)
+           stats (exists? tx-part)]
+       (set-data tx-part "rollback" (:version stats))
+       "rollback")))

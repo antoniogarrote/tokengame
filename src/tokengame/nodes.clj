@@ -133,6 +133,7 @@
                               (let [prom (rpc-id-to-promise (:internal-id (:content msg)))
                                     val (:value (:content msg))]
                                 (deliver prom val)
+                                (println (str "removing rpc promise for id " (:internal-id (:content msg)) " and  class " (class (:internal-id (:content msg)))))
                                 (remove-rpc-promise (:internal-id (:content msg))))
                               (catch Exception ex (log :error "Error processing rpc-response")))))))
 
@@ -349,7 +350,7 @@
        (rabbit/publish *rabbit-server* (node-channel-id @*node-id*) (node-exchange-id node) "msg" (default-encode msg)))))
 
 (defn rpc-blocking-call
-  "Executes a non blocking RPC call"
+  "Executes a blocking RPC call"
   ([node function args]
      (let [rpc-id (next-rpc-id)
            prom (register-rpc-promise rpc-id)
