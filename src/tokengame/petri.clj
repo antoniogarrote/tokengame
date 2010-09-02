@@ -6,7 +6,7 @@
 
 (declare remote-log)
 
-(defonce *rabbit-server* nil)
+(defonce *rabbit-server-petri* nil)
 
 (defonce *places-out* nil)
 
@@ -17,14 +17,14 @@
 (defn declare-log-exchange
   "Declares a log queue to be used by the whole net"
   ([]
-     (make-channel *rabbit-server* "tokengame-log")
-     (declare-exchange *rabbit-server* "tokengame-log" "tokengame-log")))
+     (make-channel *rabbit-server-petri* "tokengame-log")
+     (declare-exchange *rabbit-server-petri* "tokengame-log" "tokengame-log")))
 
 (defn start-framework
   "initialize the required middleware for networks to be executed"
   ([& opts]
      (let [c (apply connect opts)]
-       (alter-var-root #'*rabbit-server* (fn [_] c))
+       (alter-var-root #'*rabbit-server-petri* (fn [_] c))
        (declare-log-exchange))))
 
 (defmacro with-places-out
@@ -68,10 +68,10 @@
 (defmethod run :place
   ([component]
      (log :info (str "running place: " component))
-     (make-channel *rabbit-server* (place-channel-id component))
-     (declare-exchange *rabbit-server* (place-channel-id component) (place-exchange-id component))
+     (make-channel *rabbit-server-petri* (place-channel-id component))
+     (declare-exchange *rabbit-server-petri* (place-channel-id component) (place-exchange-id component))
      (let [queue-id (place-queue-id component)
-           queue (make-queue *rabbit-server*
+           queue (make-queue *rabbit-server-petri*
                              (place-channel-id component)
                              queue-id
                              (place-exchange-id component) "token")]
@@ -80,8 +80,8 @@
 (defn connect-place-out
   ([component]
      (remote-log :info (str "connecting to place: " component))
-     (make-channel *rabbit-server* (place-channel-id component))
-     (declare-exchange *rabbit-server* (place-channel-id component) (place-exchange-id component))))
+     (make-channel *rabbit-server-petri* (place-channel-id component))
+     (declare-exchange *rabbit-server-petri* (place-channel-id component) (place-exchange-id component))))
 
 (defn bind
   "Retrieves a number of tokens from a place"
@@ -111,14 +111,14 @@
 ;       (if (empty? remaining-places)
 ;         ;; All places bound -> ack and return
 ;         (do (doseq [[t v] tokens]
-;               (ack-message *rabbit-server* chn t false))
+;               (ack-message *rabbit-server-petri* chn t false))
 ;             (map (fn [[t v]] v) tokens))
 ;         (let [next-place (first remaining-places)
-;               maybe-token (try-consume *rabbit-server* chn (place-queue-id next-place))]
+;               maybe-token (try-consume *rabbit-server-petri* chn (place-queue-id next-place))]
 ;           (if (nil? maybe-token)
 ;             ;; Unbound place -> reject + requeue!
 ;             (do (doseq [[t v] tokens]
-;                   (reject-message *rabbit-server* chn t true))
+;                   (reject-message *rabbit-server-petri* chn t true))
 ;                 nil)
 ;             ;; bound places + 1 -> recur
 ;             (recur (rest remaining-places)
@@ -146,7 +146,7 @@
 ;                 _ (log :info (str "looking for " place-name " into " places))
                  place (find-place-out place-name)]
              (remote-log :info (str "*** About to fire to place " place " value " token))
-             (publish *rabbit-server* (place-channel-id place) (place-exchange-id place) "token" (json-str token))
+             (publish *rabbit-server-petri* (place-channel-id place) (place-exchange-id place) "token" (json-str token))
              (recur (rest places) token)))))))
 
 
@@ -164,7 +164,7 @@
            _ (doseq [place places-out] (connect-place-out place))
            places-in-map (reduce (fn [acum component]
                                    (let [_ (remote-log :info (str "*** Running component: " component))
-                                         consumer (ref (make-consumer-queue *rabbit-server* (place-channel-id component) (:queue-id component)))]
+                                         consumer (ref (make-consumer-queue *rabbit-server-petri* (place-channel-id component) (:queue-id component)))]
                                      (assoc acum component consumer)))
                                  {} places-in)
            places-out (:places-out component)]
@@ -185,24 +185,24 @@
 (defn run-sink
   "Executes a sink receiving duplicated tokens from a place"
   ([place f]
-     (make-channel *rabbit-server* (place-channel-id place))
-     (declare-exchange *rabbit-server* (place-channel-id place) (place-exchange-id place))
+     (make-channel *rabbit-server-petri* (place-channel-id place))
+     (declare-exchange *rabbit-server-petri* (place-channel-id place) (place-exchange-id place))
      (let [queue-id (str (place-queue-id place) "-" (java.util.UUID/randomUUID) "-sink")
-           _ (make-queue *rabbit-server*
+           _ (make-queue *rabbit-server-petri*
                          (place-channel-id place)
                          queue-id
                          (place-exchange-id place) "token")]
-       (f (make-consumer-queue *rabbit-server* (place-channel-id place) queue-id)))))
+       (f (make-consumer-queue *rabbit-server-petri* (place-channel-id place) queue-id)))))
 
 (defn tail-log
   "Executes a sink receiving duplicated tokens from a place"
   ([]
      (let [queue-id (str  "log-tail-" (java.util.UUID/randomUUID) "-sink")
-           _ (make-queue *rabbit-server*
+           _ (make-queue *rabbit-server-petri*
                          "tokengame-log"
                          queue-id
                          "tokengame-log" "log")]
-       (loop [queue (make-consumer-queue *rabbit-server* "tokengame-log" queue-id)]
+       (loop [queue (make-consumer-queue *rabbit-server-petri* "tokengame-log" queue-id)]
          (println (str (first queue)))
          (recur (rest queue))))))
 
@@ -223,4 +223,4 @@
   "Logs a message in the log queue"
   ([level msg]
      (let [level-str (if (keyword? level) (name level) level)]
-       (publish *rabbit-server* "tokengame-log" "tokengame-log" "log" (str (java.util.Date.) " -> " (localhost) "\r\n" (.toUpperCase level-str) ": " msg)))))
+       (publish *rabbit-server-petri* "tokengame-log" "tokengame-log" "log" (str (java.util.Date.) " -> " (localhost) "\r\n" (.toUpperCase level-str) ": " msg)))))

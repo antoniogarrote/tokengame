@@ -11,12 +11,14 @@
 (defonce *node-nodes-znode* "/tokengame/nodes")
 (defonce *node-processes-znode* "/tokengame/processes")
 (defonce *node-names-znode* "/tokengame/names")
+(defonce *node-links-znode* "/tokengame/links")
 (defonce *pid* nil)
 (defonce *mbox* nil)
 (def *process-table* (ref {}))
 (def *process-count* (ref 0))
 (def *rpc-table* (ref {}))
 (def *rpc-count* (ref 0))
+(def *links-table* (ref {}))
 (def *node-id* (ref nil))
 
 ;; protocol
@@ -38,6 +40,22 @@
                 :args          args
                 :should-return should-return
                 :internal-id    internal-id}}))
+
+(defn protocol-link-new
+  ([from to tx-name]
+     {:type :msg
+      :topic :link-new
+      :from from
+      :to   to
+      :content {:tx-name tx-name}}))
+
+(defn protocol-link-broken
+  ([from to cause]
+     {:type  :signal
+      :topic :link-broken
+      :from from
+      :to   to
+      :content {:cause cause}}))
 
 (defn protocol-answer
   ([value internal-id]
@@ -78,21 +96,66 @@
           (zk/create *node-nodes-znode* "/" {:world [:all]} :persistent))
         (when (nil? (zk/exists? *node-names-znode*))
           (zk/create *node-names-znode* "/" {:world [:all]} :persistent))
-        (when (nil? (zk/exists? *node-processes-znode*))
+        (when (nil? (zk/exists? *node-links-znode*))
+          (zk/create *node-links-znode* "/" {:world [:all]} :persistent))
+        (when (nil? (zk/exists? *node-links-znode*))
           (zk/create *node-processes-znode* "/" {:world [:all]} :persistent)))))
 
-(defn default-encode
+(defn json-encode
   "Default encoding of messages"
   ([msg]
      (json-str msg)))
 
-(defn default-decode
+(defn json-decode
   "Default decoding of messages"
   ([msg]
      (read-json msg)))
 
+(defn java-encode
+  ([obj] (let [bos (java.io.ByteArrayOutputStream.)
+               oos (java.io.ObjectOutputStream. bos)]
+           (.writeObject oos obj)
+           (.close oos)
+           (String. (.toByteArray bos)))))
+
+(defn java-decode
+  ([string] (let [bis (java.io.ByteArrayInputStream. (.getBytes string))
+                  ois (java.io.ObjectInputStream. bis)
+                  obj (.readObject ois)]
+              (.close ois)
+              obj)))
+
+(defonce default-encode json-encode)
+(defonce default-decode json-decode)
+
 (defn zk-process-path
   ([pid] (str *node-processes-znode* "/" pid)))
+
+(defn zk-link-tx-path
+  ([tx-name] (str *node-links-znode* "/" tx-name)))
+
+(defn add-link
+  ([tx-name self-pid remote-pid]
+     (println (str "ADDING LINK from " self-pid " to " remote-pid ))
+     (dosync (alter *links-table* (fn [table]
+                                    (let [old-list (get table self-pid)
+                                          old-list (if (nil? old-list) [] old-list)]
+                                      (assoc table self-pid (conj old-list remote-pid))))))))
+
+(defn remove-link
+  ([self-pid remote-pid]
+     (dosync (alter *links-table* (fn [table]
+                                    (let [old-list (get table self-pid)]
+                                      (if (nil? old-list) table
+                                          (let [new-list (filter #(not (= %1 remote-pid)) old-list)]
+                                            (assoc table self-pid new-list)))))))))
+
+(defn remove-links
+  ([self-pid]
+     (dosync (alter *links-table* (fn [table]
+                                    (let [old-list (get table self-pid)]
+                                      (if (nil? old-list) table
+                                          (dissoc table self-pid))))))))
 
 ;; core functions for nodes
 
@@ -108,7 +171,7 @@
            internal-id (get content :internal-id)]
        (println (str "invoking " function " with " args " from " from " should return? " should-return))
        (try
-        (let [f (eval-ns-fn function)
+        (let [f (eval-fn function)
               result (apply f args)]
           (println (str "Success RPC, result " result))
           (when should-return
@@ -120,14 +183,40 @@
           (do
             (log :error (str "Error invoking RPC call"))))))))
 
+
+(declare exists-pid?)
+(defn handle-link-request
+  ([msg] (let [_ (println (str "handling link request" msg))
+               from (:from msg)
+               to (:to msg)
+               tx-name (:tx-name (:content msg))]
+           (println (str "handling link request -> " msg))
+           (when (exists-pid? to)
+             ;; @todo add timeout here
+             (println (str "commiting " tx-name " " to))
+             (let [result (zk/commit (zk-link-tx-path tx-name) to)]
+               (when (= result "commit")
+                 (add-link tx-name to from)))))))
+
 (declare pid-to-mbox)
 (declare rpc-id-to-promise)
 (declare remove-rpc-promise)
-(defn dispatch-msg
+(defn dispatch-signal
   ([msg]
      (condp = (keyword (:topic msg))
-       :process (let [mbox (pid-to-mbox (:to msg))]
+       :link-broken (if-let [mbox (pid-to-mbox (:to msg))]
+                      (do
+                        (remove-link (:to msg) (:from msg))
+                        (.put mbox {:signal :link-broken
+                                    :cause (:cause (:content msg))}))))))
+
+(defn dispatch-msg
+  ([msg]
+     (println (str "Dispatching msg " (keyword (:topic msg))))
+     (condp = (keyword (:topic msg))
+       :process (if-let [mbox (pid-to-mbox (:to msg))]
                   (.put mbox (:content msg)))
+       :link-new (future (handle-link-request msg))
        :rpc     (future (process-rpc msg))
        :rpc-response (future (try
                               (let [prom (rpc-id-to-promise (:internal-id (:content msg)))
@@ -143,18 +232,27 @@
      (loop [should-continue true
             queue queue]
        (let [msg (.take queue)]
+         (println (str "READ FROM QUEUE " msg))
          (try
           (do
             (let [msg (default-decode msg)]
               (condp = (keyword (:type msg))
                 :msg (dispatch-msg msg)
+                :signal (dispatch-signal msg)
                 (log :error (str "*** " name " , " (java.util.Date.) " uknown message type for : " msg)))))
           (catch Exception ex (log :error (str "***  " name " , " (java.util.Date.) " error processing message : " msg " --> " (.getMessage ex)))))
          (recur true queue)))))
 
 
+(declare bootstrap-node)
+(defn- bootstrap-from-file
+  ([file-path]
+     (let [config (eval (read-string (slurp file-path)))]
+       (bootstrap-node (:node-name config) (:rabbit-options config) (:zookeeper-options config)))))
+
 (defn bootstrap-node
   "Adds a new node to the distributed application"
+  ([file-path] (bootstrap-from-file file-path))
   ([name rabbit-args zookeeper-args]
      (let [id (random-uuid)
            ;; connecting to RabbitMQ
@@ -227,6 +325,9 @@
   ([rpc-id]
      (alter @*rpc-table* (fn [table] (dissoc table rpc-id)))))
 
+(defn- exists-pid?
+  ([pid] (not (nil? (get @*process-table* (pid-to-process-number pid))))))
+
 (defn pid-to-mbox
   ([pid] (let [rpid (pid-to-process-number pid)]
            (:mbox (get @*process-table* rpid)))))
@@ -254,6 +355,13 @@
            (zk/delete (str *node-names-znode* "/" registered)) version))
        (dosync (alter *process-table* (fn [table] (dissoc table (pid-to-process-number pid))))))))
 
+(declare send!)
+(defn notify-links
+  ([pid cause]
+     (if-let [pids (get @*links-table* pid)]
+       (doseq [linked pids]
+         (send! linked (protocol-link-broken pid linked cause))))))
+
 (defn spawn
   "Creates a new local process"
   ([]
@@ -264,7 +372,8 @@
        pid))
   ([f]
      (let [pid (spawn)
-           mbox (pid-to-mbox pid)]
+           mbox (pid-to-mbox pid)
+           f (if (string? f) (eval-fn f) f)]
        (future
         (binding [*pid* pid
                   *mbox* mbox]
@@ -273,10 +382,12 @@
              (clean-process *pid*))
            (catch Exception ex
              (log :error (str "*** process " pid " died with message : " (.getMessage ex)))
+             (notify-links *pid* (str (class ex) ":" (.getMessage ex)))
+             (remove-links *pid*)
              (clean-process *pid*)))))
          pid)))
 
-(defn spawn-in-shell
+(defn spawn-in-repl
   "Creates a new process attached to the running shell"
   ([] (let [pid (spawn)]
         (alter-var-root #'*pid* (fn [_] pid))
@@ -291,9 +402,20 @@
 (defn remote-send
   ([node pid msg]
      (if (zk/exists? (zk-process-path pid))
+       (let [msg (if (and (= (map? msg))
+                          (= :signal (keyword (:type msg))))
+                   msg
+                   (protocol-process-msg (self) pid msg))]
+         (rabbit/declare-exchange *rabbit-server* (node-channel-id @*node-id*) (node-exchange-id node))
+         (rabbit/publish *rabbit-server* (node-channel-id @*node-id*) (node-exchange-id node) "msg" (default-encode msg)))
+       (throw (Exception. (str "Non existent remote process " pid))))))
+
+(defn admin-send
+  ([node pid msg]
+     (if (zk/exists? (zk-process-path pid))
        (do
          (rabbit/declare-exchange *rabbit-server* (node-channel-id @*node-id*) (node-exchange-id node))
-         (rabbit/publish *rabbit-server* (node-channel-id @*node-id*) (node-exchange-id node) "msg" (default-encode (protocol-process-msg (self) pid msg))))
+         (rabbit/publish *rabbit-server* (node-channel-id @*node-id*) (node-exchange-id node) "msg" (default-encode msg)))
        (throw (Exception. (str "Non existent remote process " pid))))))
 
 (defn send!
@@ -301,8 +423,11 @@
   ([pid msg]
      (let [node (pid-to-node-id pid)]
        (if (= node @*node-id*)
-         (let [mbox (pid-to-mbox pid)]
-           (.put mbox msg))
+         (if (and (= (map? msg))
+                  (= :signal (keyword (:type msg))))
+           (dispatch-signal msg)
+           (let [mbox (pid-to-mbox pid)]
+             (.put mbox msg)))
          (remote-send node pid msg)))))
 
 (defn receive
@@ -357,3 +482,23 @@
            msg (protocol-rpc (self) function args true rpc-id)]
        (rabbit/publish *rabbit-server* (node-channel-id @*node-id*) (node-exchange-id node) "msg" (default-encode msg))
        @prom)))
+
+(defn link
+  "Links this process with the process identified by the provided PID. Links are bidirectional"
+  ([pid]
+     (let [pid-number  (apply + (map #(int %1) (vec pid)))
+           self-number (apply + (map #(int %1) (vec (self))))
+           tx-name (if (< pid-number self-number) (str pid "-" (self)) (str (self) "-" pid))
+           ;; we create a transaction for committing on the link
+           _2pc (zk/make-2-phase-commit (zk-link-tx-path tx-name) [pid (self)])]
+       ;; we send the link request
+       (println (str "about to send request " pid " -> " (protocol-link-new (self) pid tx-name)))
+       (admin-send (pid-to-node-id pid) pid (protocol-link-new (self) pid tx-name))
+       ;; we commit and wait for a result
+       ;; @todo add timeout!
+       (println (str "about to block for commit"))
+       (let [result (zk/commit (zk-link-tx-path tx-name) (self))]
+         (println (str "get response " result))
+         (if (= result "commit")
+           (add-link tx-name (self) pid)
+           (throw (Exception. (str "Error linking processes " (self) " - " pid))))))))

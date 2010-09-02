@@ -42,5 +42,9 @@
        (let [ns-part (first (vec (.split ns-fn "/")))]
          (eval (read-string (str "(do (use '" ns-part ")" ns-fn ")")))))))
 
+(defn eval-fn
+  ([ns-fn]
+     (eval (read-string ns-fn))))
+
 (defn random-uuid
   ([] (.replace (str (java.util.UUID/randomUUID)) "-" "")))

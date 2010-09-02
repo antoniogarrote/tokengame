@@ -1,6 +1,8 @@
 (ns tokengame.core
   (:use [tokengame.petri]
-        [tokengame.pnml])
+        [tokengame.pnml]
+        [tokengame.nodes]
+        [clojure.main])
   (:gen-class :main true))
 
 (defn cmd-param-to-keyword
@@ -57,23 +59,33 @@
     (println (str "unknown command" command))))
 
 (defn show-help []
-  (println "tokengame syntax: java -cp app.jar tokengame.core model-file.pnml COMMAND [ARGS]")
-  (println "COMMAND: run-transition name [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
-  (println "COMMAND: watch-place place-name [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
-  (println "COMMAND: fire place-name token-code [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
-  (println "COMMAND: run-standalone [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
-  (println "COMMAND: log [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]"))
+  (println "tokengame syntax: java -cp app.jar tokengame.core [model-file.pnml | node-config.clj] COMMAND [ARGS]")
+  (println "COMMAND: petri run-transition name [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
+  (println "COMMAND: petri watch-place place-name [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
+  (println "COMMAND: petri fire place-name token-code [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
+  (println "COMMAND: petri run-standalone [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
+  (println "COMMAND: petri log [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
+  (println "COMMAND: node start"))
 
 (defn -main
   [& args]
-  (let [min-num-args (condp = (second args)
-                       "run-standalone" 2
-                       "log"            2
-                       3)]
+  (println (str "ARGS: " args))
+  (let [min-num-args (condp = (nth args 2)
+                       "run-standalone" 3
+                       "log"            3
+                       "start"          3
+                       4)]
     (if (< (count args) min-num-args)
       (show-help)
-      (let [pnml-file (first args)
-            command-args (rest args)
-            model (parse-pnml (java.io.File. pnml-file))]
-        (println (str "*** Loaded model: " model))
-        (process-command model (first command-args) (rest command-args))))))
+      (let [file (first args)
+            kind (second args)]
+        (if (= kind "node")
+          (let [config (eval (read-string (slurp file)))]
+            (bootstrap-node (:node-name config) (:rabbit-options config) (:zookeeper-options config))
+            (spawn-in-repl)
+            (repl))
+          (let [command-args (rest (rest args))
+                pnml-file file
+                model (parse-pnml (java.io.File. pnml-file))]
+            (println (str "*** Loaded model: " model))
+            (process-command model (first command-args) (rest command-args))))))))
