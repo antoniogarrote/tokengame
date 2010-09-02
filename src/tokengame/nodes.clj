@@ -136,7 +136,7 @@
 
 (defn add-link
   ([tx-name self-pid remote-pid]
-     (println (str "ADDING LINK from " self-pid " to " remote-pid ))
+;     (println (str "ADDING LINK from " self-pid " to " remote-pid ))
      (dosync (alter *links-table* (fn [table]
                                     (let [old-list (get table self-pid)
                                           old-list (if (nil? old-list) [] old-list)]
@@ -169,11 +169,11 @@
            args     (get content :args)
            should-return (get content :should-return)
            internal-id (get content :internal-id)]
-       (println (str "invoking " function " with " args " from " from " should return? " should-return))
+;       (println (str "invoking " function " with " args " from " from " should return? " should-return))
        (try
         (let [f (eval-fn function)
               result (apply f args)]
-          (println (str "Success RPC, result " result))
+;          (println (str "Success RPC, result " result))
           (when should-return
             (let [node (pid-to-node-id from)
                   resp (protocol-answer result internal-id)]
@@ -186,14 +186,13 @@
 
 (declare exists-pid?)
 (defn handle-link-request
-  ([msg] (let [_ (println (str "handling link request" msg))
-               from (:from msg)
+  ([msg] (let [from (:from msg)
                to (:to msg)
                tx-name (:tx-name (:content msg))]
-           (println (str "handling link request -> " msg))
+;           (println (str "handling link request -> " msg))
            (when (exists-pid? to)
              ;; @todo add timeout here
-             (println (str "commiting " tx-name " " to))
+;             (println (str "commiting " tx-name " " to))
              (let [result (zk/commit (zk-link-tx-path tx-name) to)]
                (when (= result "commit")
                  (add-link tx-name to from)))))))
@@ -212,7 +211,7 @@
 
 (defn dispatch-msg
   ([msg]
-     (println (str "Dispatching msg " (keyword (:topic msg))))
+;     (println (str "Dispatching msg " (keyword (:topic msg))))
      (condp = (keyword (:topic msg))
        :process (if-let [mbox (pid-to-mbox (:to msg))]
                   (.put mbox (:content msg)))
@@ -222,7 +221,7 @@
                               (let [prom (rpc-id-to-promise (:internal-id (:content msg)))
                                     val (:value (:content msg))]
                                 (deliver prom val)
-                                (println (str "removing rpc promise for id " (:internal-id (:content msg)) " and  class " (class (:internal-id (:content msg)))))
+;                                (println (str "removing rpc promise for id " (:internal-id (:content msg)) " and  class " (class (:internal-id (:content msg)))))
                                 (remove-rpc-promise (:internal-id (:content msg))))
                               (catch Exception ex (log :error "Error processing rpc-response")))))))
 
@@ -232,7 +231,7 @@
      (loop [should-continue true
             queue queue]
        (let [msg (.take queue)]
-         (println (str "READ FROM QUEUE " msg))
+;         (println (str "READ FROM QUEUE " msg))
          (try
           (do
             (let [msg (default-decode msg)]
@@ -492,13 +491,13 @@
            ;; we create a transaction for committing on the link
            _2pc (zk/make-2-phase-commit (zk-link-tx-path tx-name) [pid (self)])]
        ;; we send the link request
-       (println (str "about to send request " pid " -> " (protocol-link-new (self) pid tx-name)))
+;       (println (str "about to send request " pid " -> " (protocol-link-new (self) pid tx-name)))
        (admin-send (pid-to-node-id pid) pid (protocol-link-new (self) pid tx-name))
        ;; we commit and wait for a result
        ;; @todo add timeout!
-       (println (str "about to block for commit"))
+;       (println (str "about to block for commit"))
        (let [result (zk/commit (zk-link-tx-path tx-name) (self))]
-         (println (str "get response " result))
+;         (println (str "get response " result))
          (if (= result "commit")
            (add-link tx-name (self) pid)
            (throw (Exception. (str "Error linking processes " (self) " - " pid))))))))
