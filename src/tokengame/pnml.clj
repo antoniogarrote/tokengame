@@ -85,5 +85,17 @@
 (defn parse-pnml
   "Parses a PNML document from a String or a java.io.File"
   ([file-or-doc]
-     (let [doc (if (instance? java.io.File file-or-doc) (parse file-or-doc) (parse (java.io.ByteArrayInputStream. (.getBytes file-or-doc))))]
-       (make-network-description (find-components (:content doc) {:places [] :transitions [] :arcs []})))))
+     (let [doc (if (instance? java.io.File file-or-doc) (parse file-or-doc) (parse (java.io.ByteArrayInputStream. (.getBytes file-or-doc))))
+           before (make-network-description (find-components (:content doc) {:places [] :transitions [] :arcs []}))
+           after {:places (doall (:places before))
+                  :transitions (doall (:transitions before))}]
+       ;; lazy seq and java serialization problem
+       after)))
+
+
+;; Model manipulation
+
+(defn out-transitions-for-place
+  ([place model]
+     (filter
+      (fn [t] (some #(= (:name %1) (:name place)) (:places-in t)))(:transitions model))))

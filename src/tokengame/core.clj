@@ -1,8 +1,7 @@
 (ns tokengame.core
-  (:use [tokengame.petri]
-        [tokengame.pnml]
+  (:use [tokengame.pnml]
         [tokengame.nodes]
-        [clojure.main])
+        [tokengame.actors])
   (:gen-class :main true))
 
 (defn cmd-param-to-keyword
@@ -28,11 +27,11 @@
 
 (defn process-command [model command args]
   (condp = command
-    "run-transition" (let [name (first args)
-                           rabbit-args (cmd-params-to-hash (rest args))]
-                       (when (or (nil? name) (nil? (find-transition model name))) (throw (Exception. (str "Cannot find transition named " name " in model " model))))
-                       (start-framework rabbit-args)
-                       (run (find-transition model name)))
+ ;   "run-transition" (let [name (first args)
+ ;                          rabbit-args (cmd-params-to-hash (rest args))]
+ ;                      (when (or (nil? name) (nil? (find-transition model name))) (throw (Exception. (str "Cannot find transition named " name " in model " model))))
+ ;                      (start-framework rabbit-args)
+ ;                      (run (find-transition model name)))
 
     "watch-place" (let [name (first args)
                         rabbit-args (cmd-params-to-hash (rest args))]
@@ -48,44 +47,48 @@
              (run-fire (find-place model name) (eval (read-string token-code)))
              (java.lang.System/exit 0))
 
-    "run-standalone" (let [rabbit-args (cmd-params-to-hash args)]
-                       (start-framework rabbit-args)
-                       (run-net-locally model))
+;    "run-standalone" (let [rabbit-args (cmd-params-to-hash args)]
+;                       (start-framework rabbit-args)
+;                       (run-net-locally model))
 
-    "log" (let [rabbit-args (cmd-params-to-hash (rest args))]
-            (start-framework rabbit-args)
-            (tail-log))
+;    "log" (let [rabbit-args (cmd-params-to-hash (rest args))]
+;            (start-framework rabbit-args)
+;            (tail-log))
 
     (println (str "unknown command" command))))
 
 (defn show-help []
-  (println "tokengame syntax: java -cp app.jar tokengame.core [model-file.pnml | node-config.clj] COMMAND [ARGS]")
-  (println "COMMAND: petri run-transition name [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
-  (println "COMMAND: petri watch-place place-name [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
-  (println "COMMAND: petri fire place-name token-code [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
-  (println "COMMAND: petri run-standalone [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
-  (println "COMMAND: petri log [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
-  (println "COMMAND: node start"))
+  (println "tokengame syntax: java -cp app.jar tokengame.core COMMAND [ARGS]")
+  (println "COMMAND: start-node node-config-file")
+  (println "COMMAND: start-network path-to-network-model path-to-nodes-file")
+;  (println "COMMAND: petri watch-place place-name [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
+  (println "COMMAND: fire path-to-network-model place-name token-code ")
+;  (println "COMMAND: petri log [-username rabbit-username -password rabbit-password -host rabbit-host -port rabbit-port -virtual-host rabbit-vh]")
+;  (println "COMMAND: node start"))
+  )
 
 (defn -main
   [& args]
   (println (str "ARGS: " args))
-  (let [min-num-args (condp = (nth args 2)
-                       "run-standalone" 3
-                       "log"            3
-                       "start"          3
-                       4)]
+
+  (let [min-num-args (condp = (nth args 0)
+                       "start-node" 2
+                       "start-network" 3
+                       "fire" 4)]
     (if (< (count args) min-num-args)
       (show-help)
-      (let [file (first args)
-            kind (second args)]
-        (if (= kind "node")
-          (let [config (eval (read-string (slurp file)))]
-            (bootstrap-node (:node-name config) (:rabbit-options config) (:zookeeper-options config))
-            (spawn-in-repl)
-            (repl))
-          (let [command-args (rest (rest args))
-                pnml-file file
-                model (parse-pnml (java.io.File. pnml-file))]
-            (println (str "*** Loaded model: " model))
-            (process-command model (first command-args) (rest command-args))))))))
+      (condp = (first args)
+        "start-node" (bootstrap-node (second args))
+        "start-network" (run-petri-net (nth args 1) (nth args 2))))))
+;      (let [file (first args)
+;            kind (second args)]
+;        (if (= kind "node")
+;          (let [config (eval (read-string (slurp file)))]
+;            (bootstrap-node (:node-name config) (:rabbit-options config) (:zookeeper-options config))
+;            (spawn-in-repl)
+;            (repl))
+;          (let [command-args (rest (rest args))
+;                pnml-file file
+;                model (parse-pnml (java.io.File. pnml-file))]
+;            (println (str "*** Loaded model: " model))
+;            (process-command model (first command-args) (rest command-args))))))))
